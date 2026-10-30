@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shrinkdenoise"
+version = "1.0.0"
+description = "Shrinkage estimators (E1-E6) on median and CFM initial estimates for salt-and-pepper noise removal, with a GUI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.23", "scipy>=1.9", "numba>=0.57", "Pillow>=9.0"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+shrinkdenoise = "shrinkdenoise.cli:main"
+shrinkdenoise-gui = "shrinkdenoise.gui:main"
+
+[tool.setuptools]
+packages = ["shrinkdenoise"]

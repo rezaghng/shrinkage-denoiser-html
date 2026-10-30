@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shrinkage Denoiser</title>
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#1f5f99">
+<style>
+:root{--bg:#f6f7f9;--fg:#1c2330;--card:#fff;--mu:#5b6678;--ac:#1f5f99;--bd:#d9dee6}
+@media(prefers-color-scheme:dark){:root{--bg:#14181f;--fg:#e6e9ef;--card:#1d232d;--mu:#9aa5b5;--ac:#5aa2e0;--bd:#333c4a}}
+*{box-sizing:border-box}body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:1200px;margin:auto;padding:16px}h1{font-size:20px;margin:0 0 4px}p.s{color:var(--mu);margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:end}label{display:flex;flex-direction:column;gap:4px;color:var(--mu);font-size:13px}
+select,input[type=number],button{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg)}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac);padding:8px 18px}button:disabled{opacity:.5}
+#drop{border:2px dashed var(--bd);border-radius:8px;padding:10px 14px;cursor:pointer;color:var(--mu)}#drop.o{border-color:var(--ac)}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.pn{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:8px;text-align:center}.pn b{display:block}.pn span{color:var(--mu);font-size:13px}
+canvas{max-width:100%;height:auto;image-rendering:pixelated;background:#222;margin-top:6px}
+progress{width:100%}#st{color:var(--mu);margin:6px 0 0}small{color:var(--mu)}
+</style></head><body><main>
+<h1>Shrinkage Denoiser</h1>
+<p class="s">Salt-and-pepper noise removal with the shrinkage estimators of the paper (median or CFM initial estimate). Runs entirely in your browser; images are not uploaded.</p>
+<div class="card"><div class="row">
+<div id="drop">Drop an image here or click to open<input id="f" type="file" accept="image/*" hidden></div>
+<label>Noise<select id="m"><option value="add">Add noise to this image</option><option value="given">Image is already noisy</option></select></label>
+<label>Noise density (%)<input id="d" type="number" min="1" max="90" value="20" style="width:90px"></label>
+<label>Seed<input id="sd" type="number" value="0" style="width:80px"></label>
+<label>Initial estimate E0<select id="b"><option value="0">Median (base M)</option><option value="1">CFM (base C)</option></select></label>
+<label>Estimator<select id="e"><option value="E1">E1 least squares</option><option value="E4">E4 ridge, fixed penalty</option><option value="E5">E5 empirical-Bayes ridge (k=1)</option><option value="E6" selected>E6 empirical-Bayes ridge (k=3), best</option></select></label>
+<button class="p" id="go" disabled>Denoise</button><button id="dl" disabled>Download result</button></div>
+<progress id="pr" value="0" max="1" hidden></progress><div id="st">Open an image to start.</div>
+<small>Gray-scale processing as in the paper (colour images are converted). Noise is detected as the values 0 and 255. Estimators E2 and E3 are available in the desktop app.</small></div>
+<div class="g"><div class="pn"><b>Noisy input</b><span id="c1">&nbsp;</span><br><canvas id="k1"></canvas></div>
+<div class="pn"><b id="t2">Classical algorithm (E0)</b><span id="c2">&nbsp;</span><br><canvas id="k2"></canvas></div>
+<div class="pn"><b id="t3">Shrinkage estimator</b><span id="c3">&nbsp;</span><br><canvas id="k3"></canvas></div></div>
+</main>
+<script type="text/js-worker" id="w">
+function ref(i,n){while(i<0||i>=n)i=i<0?-i-1:2*n-i-1;return i}
+function boxf(a,h,w,o,t){const R=9;
+ for(let y=0;y<h;y++){const r=y*w;let s=0;for(let k=-R;k<=R;k++)s+=a[r+ref(k,w)];for(let x=0;x<w;x++){t[r+x]=s;s+=a[r+ref(x+R+1,w)]-a[r+ref(x-R,w)]}}
+ for(let x=0;x<w;x++){let s=0;for(let k=-R;k<=R;k++)s+=t[ref(k,h)*w+x];for(let y=0;y<h;y++){o[y*w+x]=s;s+=t[ref(y+R+1,h)*w+x]-t[ref(y-R,h)*w+x]}}}
+function med(a){a.sort((p,q)=>p-q);const n=a.length;return n&1?a[n>>1]:(a[n/2-1]+a[n/2])/2}
+function feats(g,c,h,w,base){const F=new Float64Array(h*w*8),ys=[],xs=[],vs=[];
+ function col(y,x,r){ys.length=xs.length=vs.length=0;for(let yy=Math.max(y-r,0);yy<Math.min(h,y+r+1);yy++)for(let xx=Math.max(x-r,0);xx<Math.min(w,x+r+1);xx++)if((yy!=y||xx!=x)&&c[yy*w+xx]){ys.push(yy);xs.push(xx);vs.push(g[yy*w+xx])}}
+ function cfm(){let best=-1,bv=NaN;const n=vs.length;for(let i=0;i<n;i++){let sc=0;for(let j=0;j<n;j++)sc+=(150/(150+Math.abs(vs[j]-vs[i])))*(1.5/(1.5+Math.max(Math.abs(ys[j]-ys[i]),Math.abs(xs[j]-xs[i]))));if(sc>best){best=sc;bv=vs[i]}}return bv}
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){const o=(y*w+x)*8;let e0=-1;
+  for(let r=1;r<=5;r++){col(y,x,r);if(vs.length>=3){e0=base?cfm():med(vs.slice());break}}
+  if(e0<0){let s=0,n=0;for(let yy=Math.max(y-10,0);yy<Math.min(h,y+11);yy++)for(let xx=Math.max(x-10,0);xx<Math.min(w,x+11);xx++)if(c[yy*w+xx]){s+=g[yy*w+xx];n++}e0=n>0?s/n:128}
+  F[o]=e0;let sw=0,sv=0,sw2=0,sv2=0;
+  for(let yy=Math.max(y-3,0);yy<Math.min(h,y+4);yy++)for(let xx=Math.max(x-3,0);xx<Math.min(w,x+4);xx++)if((yy!=y||xx!=x)&&c[yy*w+xx]){const v=g[yy*w+xx],d2=(yy-y)**2+(xx-x)**2;
+   let q=Math.exp(-d2/(2*1.44));sw+=q;sv+=q*v;q=Math.exp(-d2/(2*2.25)-(v-e0)**2/288);sw2+=q;sv2+=q*v}
+  F[o+1]=sw>0?sv/sw:e0;F[o+6]=sw2>1e-9?sv2/sw2:e0;
+  for(let d=0;d<4;d++){const dy=d==0?0:1,dx=d==0?1:d==1?0:d==2?1:-1,a=[];
+   for(let s=-3;s<=3;s++){if(!s)continue;const yy=y+s*dy,xx=x+s*dx;if(yy>=0&&yy<h&&xx>=0&&xx<w&&c[yy*w+xx])a.push(g[yy*w+xx])}
+   F[o+2+d]=a.length>=2?med(a):e0}
+  col(y,x,2);if(base)F[o+7]=vs.length>=1?med(vs.slice()):e0;else{const v=cfm();F[o+7]=vs.length?v:e0}}
+ return F}
+function chol(M,q){for(let j=0;j<q;j++){let s=M[j*q+j];for(let k=0;k<j;k++)s-=M[j*q+k]**2;if(!(s>0))return false;const d=Math.sqrt(s);M[j*q+j]=d;
+ for(let i=j+1;i<q;i++){let t=M[i*q+j];for(let k=0;k<j;k++)t-=M[i*q+k]*M[j*q+k];M[i*q+j]=t/d}}return true}
+function csolve(M,b,x,q){for(let i=0;i<q;i++){let s=b[i];for(let k=0;k<i;k++)s-=M[i*q+k]*x[k];x[i]=s/M[i*q+i]}
+ for(let i=q-1;i>=0;i--){let s=x[i];for(let k=i+1;k<q;k++)s-=M[k*q+i]*x[k];x[i]=s/M[i*q+i]}}
+function band(g,h,w,base,est,y0,y1){const N=h*w,q=15,c=new Uint8Array(N),D=new Float64Array(N*q),r=new Float64Array(N);
+ for(let p=0;p<N;p++)c[p]=g[p]!=0&&g[p]!=255?1:0;
+ const F=feats(g,c,h,w,base),offs=[];for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++)if(a||b)offs.push([a,b]);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){const p=y*w+x,e0=F[p*8];r[p]=g[p]-e0;
+  for(let k=0;k<8;k++){const yy=Math.min(Math.max(y+offs[k][0],0),h-1),xx=Math.min(Math.max(x+offs[k][1],0),w-1),pp=yy*w+xx;D[p*q+k]=c[pp]?g[pp]-e0:0}
+  for(let k=1;k<8;k++)D[p*q+7+k]=F[p*8+k]-e0}
+ const tmp=new Float64Array(N),t2=new Float64Array(N),cf=Float64Array.from(c),n=new Float64Array(N),rr=new Float64Array(N),
+  bb=[],Ab=[];boxf(cf,h,w,n,t2);
+ for(let p=0;p<N;p++)tmp[p]=c[p]*r[p]*r[p];boxf(tmp,h,w,rr,t2);
+ for(let i=0;i<q;i++){for(let p=0;p<N;p++)tmp[p]=c[p]*D[p*q+i]*r[p];bb.push(new Float64Array(N));boxf(tmp,h,w,bb[i],t2)}
+ for(let i=0;i<q;i++)for(let j=i;j<q;j++){for(let p=0;p<N;p++)tmp[p]=c[p]*D[p*q+i]*D[p*q+j];const o=new Float64Array(N);boxf(tmp,h,w,o,t2);Ab[i*q+j]=Ab[j*q+i]=o}
+ const out=new Uint8Array((y1-y0)*w),cls=new Uint8Array((y1-y0)*w),M0=new Float64Array(q*q),M=new Float64Array(q*q),B=new Float64Array(q),bo=new Float64Array(q),be=new Float64Array(q);
+ const kap=est=='E6'?3:1,rd=v=>Math.min(255,Math.max(0,Math.floor(v+.5)));
+ for(let y=y0;y<y1;y++)for(let x=0;x<w;x++){const p=y*w+x,o=(y-y0)*w+x;out[o]=cls[o]=g[p];if(c[p])continue;
+  const e0=F[p*8];cls[o]=rd(e0);let tr=0;for(let i=0;i<q;i++){B[i]=bb[i][p];for(let j=0;j<q;j++)M0[i*q+j]=Ab[i*q+j][p];tr+=M0[i*q+i]}tr/=q;
+  const nu=n[p]-q;let ok=true;be.fill(0);
+  if(est=='E4'){M.set(M0);const a=30*Math.max(n[p],1);for(let i=0;i<q;i++)M[i*q+i]+=a;ok=chol(M,q);if(ok)csolve(M,B,be,q)}
+  else{M.set(M0);for(let i=0;i<q;i++)M[i*q+i]+=1e-3*tr+1e-9;ok=chol(M,q);if(ok)csolve(M,B,bo,q);
+   if(ok&&nu>=4){if(est=='E1')be.set(bo);else{let bq=0,bs=0,nb=0;for(let i=0;i<q;i++){bs+=bo[i]*B[i];nb+=bo[i]*bo[i];for(let j=0;j<q;j++)bq+=bo[i]*M0[i*q+j]*bo[j]}
+    const W=Math.max(rr[p]-2*bs+bq,0),mu=kap*q*(W/Math.max(nu,1))/Math.max(nb,1e-12),a=mu+(tr>0?1e-9*tr:1);
+    M.set(M0);for(let i=0;i<q;i++)M[i*q+i]+=a;if(chol(M,q))csolve(M,B,be,q);else be.fill(0)}}}
+  if(!ok||(est!='E4'&&nu<4))be.fill(0);let s=e0;for(let i=0;i<q;i++)s+=D[p*q+i]*be[i];out[o]=rd(s)}
+ return[out,cls]}
+function denoise(g,h,w,base,est,prog){const out=Uint8Array.from(g),cls=Uint8Array.from(g),B=64,Mg=24;
+ for(let y0=0;y0<h;y0+=B){const y1=Math.min(y0+B,h),ya=Math.max(y0-Mg,0),yb=Math.min(y1+Mg,h);let any=false;
+  for(let p=y0*w;p<y1*w;p++)if(g[p]==0||g[p]==255){any=true;break}
+  if(any){const[o,c]=band(g.slice(ya*w,yb*w),yb-ya,w,base,est,y0-ya,y1-ya);out.set(o,y0*w);cls.set(c,y0*w)}
+  if(prog)prog(y1/h)}
+ return[out,cls]}
+self.onmessage=e=>{const{g,h,w,base,est}=e.data;const[o,c]=denoise(g,h,w,base,est,p=>self.postMessage({p}));self.postMessage({o,c})}
+</script>
+<script>
+const $=i=>document.getElementById(i);let G=null,H=0,W=0,NZ=null,OUT=null,gt=null;
+const gray=(d,n)=>{const g=new Uint8Array(n);for(let i=0;i<n;i++)g[i]=Math.min(255,Math.floor(.298936021293776*d[4*i]+.587043074451121*d[4*i+1]+.114020904255103*d[4*i+2]+.5));return g};
+const psnr=(a,b)=>{let s=0;for(let i=0;i<a.length;i++)s+=(a[i]-b[i])**2;s/=a.length;return s?10*Math.log10(65025/s):Infinity};
+const show=(id,g)=>{const k=$(id);k.width=W;k.height=H;const x=k.getContext('2d'),im=x.createImageData(W,H);for(let i=0;i<g.length;i++){im.data[4*i]=im.data[4*i+1]=im.data[4*i+2]=g[i];im.data[4*i+3]=255}x.putImageData(im,0,0)};
+function rng(s){return()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function load(f){const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{const c=document.createElement('canvas');c.width=W=im.width;c.height=H=im.height;const x=c.getContext('2d');x.drawImage(im,0,0);
+ G=gray(x.getImageData(0,0,W,H).data,W*H);URL.revokeObjectURL(u);show('k1',G);$('c1').textContent='original';OUT=null;$('dl').disabled=true;$('go').disabled=false;
+ $('st').textContent=`${W} x ${H} px. Estimated time about ${Math.max(W*H/1e6*10,1).toFixed(0)} s.`};im.src=u}
+$('drop').onclick=()=>$('f').click();$('f').onchange=e=>e.target.files[0]&&load(e.target.files[0]);
+$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('o')};$('drop').ondragleave=()=>$('drop').classList.remove('o');
+$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('o');e.dataTransfer.files[0]&&load(e.dataTransfer.files[0])};
+$('go').onclick=()=>{const add=$('m').value=='add',d=Math.min(90,Math.max(1,+$('d').value||20))/100,r=rng(+$('sd').value||0),ref=add?G:null;
+ NZ=Uint8Array.from(G);if(add)for(let i=0;i<NZ.length;i++){const u=r();if(u<d/2)NZ[i]=0;else if(u<d)NZ[i]=255}
+ let cnt=0;for(const v of NZ)if(v==0||v==255)cnt++;show('k1',NZ);$('c1').textContent=`${(100*cnt/NZ.length).toFixed(1)}% pixels at 0/255`+(ref?`, PSNR ${psnr(ref,NZ).toFixed(2)} dB`:'');
+ const base=+$('b').value,est=$('e').value;$('go').disabled=true;$('pr').hidden=false;$('pr').value=0;$('st').textContent='Working...';const t0=performance.now();
+ const wk=new Worker(URL.createObjectURL(new Blob([$('w').textContent],{type:'text/javascript'})));
+ wk.onmessage=e=>{if(e.data.p!==undefined){$('pr').value=e.data.p;return}OUT=e.data.o;wk.terminate();
+  show('k2',e.data.c);show('k3',OUT);$('t2').textContent='Classical '+(base?'CFM':'median')+' (E0)';$('t3').textContent=est+(base?'-C':'-M');
+  let ex='';if(ref){const a=psnr(ref,e.data.c),b=psnr(ref,OUT);$('c2').textContent=`PSNR ${a.toFixed(2)} dB`;$('c3').textContent=`PSNR ${b.toFixed(2)} dB`;ex=` Gain over E0: ${(b-a>=0?'+':'')+(b-a).toFixed(2)} dB.`}
+  else{$('c2').innerHTML=$('c3').innerHTML='&nbsp;'}
+  $('pr').hidden=true;$('go').disabled=false;$('dl').disabled=false;$('st').textContent=`Done in ${((performance.now()-t0)/1000).toFixed(1)} s.`+ex};
+ wk.onerror=e=>{$('st').textContent='Error: '+e.message;$('go').disabled=false;$('pr').hidden=true};
+ wk.postMessage({g:NZ,h:H,w:W,base,est})};
+$('dl').onclick=()=>{$('k3').toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='denoised.png';a.click()})};
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js');
+</script></body></html>
